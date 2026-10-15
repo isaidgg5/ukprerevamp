@@ -123,19 +123,6 @@
       var script = document.createElement("script");
       script.src = loaderUrl;
       script.onload = () => {
-        (window.splitloader ? window.splitloader.ready : Promise.resolve()).then(() => {
-        try {
-          var m = window.splitloader && window.splitloader.manifest;
-          if (m && m.files) {
-            Object.keys(m.files).forEach(function (k) {
-              try {
-                var p = decodeURIComponent(new URL(k, document.baseURI).pathname);
-                if (p.charAt(0) === "/") p = p.slice(1);
-                if (p !== k && !m.files[p]) m.files[p] = m.files[k];
-              } catch (e) {}
-            });
-          }
-        } catch (e) {}
         createUnityInstance(canvas, config, (progress) => {
           progressBarFull.style.width = 100 * progress + "%";
               }).then((unityInstance) => {
@@ -146,10 +133,36 @@
               }).catch((message) => {
                 alert(message);
               });
-        });
             };
 
-      document.body.appendChild(script);
+      (window.splitloader ? window.splitloader.ready : Promise.resolve()).then(() => {
+        try {
+          var m = window.splitloader && window.splitloader.manifest;
+          if (m && m.files) {
+            Object.keys(m.files).forEach(function (k) {
+              try {
+                var p1 = decodeURIComponent(new URL(k, document.baseURI).pathname);
+                if (p1.charAt(0) === "/") p1 = p1.slice(1);
+                if (p1 !== k && !m.files[p1]) m.files[p1] = m.files[k];
+              } catch (e) {}
+              try {
+                var p2 = decodeURIComponent(new URL(k, document.URL).pathname);
+                if (p2.charAt(0) === "/") p2 = p2.slice(1);
+                if (p2 !== k && !m.files[p2]) m.files[p2] = m.files[k];
+              } catch (e) {}
+            });
+          }
+        } catch (e) {}
+        try {
+          return fetch(config.codeUrl, { credentials: "same-origin" }).then(function (r) {
+            if (!r.ok) throw new Error("warmup " + r.status);
+            return r.arrayBuffer();
+          }).catch(function () {});
+        } catch (e) {}
+        return null;
+      }).then(function () {
+        document.body.appendChild(script);
+      });
 
     </script>
   </body>
