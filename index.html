@@ -124,6 +124,18 @@
       script.src = loaderUrl;
       script.onload = () => {
         (window.splitloader ? window.splitloader.ready : Promise.resolve()).then(() => {
+        try {
+          var m = window.splitloader && window.splitloader.manifest;
+          if (m && m.files) {
+            Object.keys(m.files).forEach(function (k) {
+              try {
+                var p = decodeURIComponent(new URL(k, document.baseURI).pathname);
+                if (p.charAt(0) === "/") p = p.slice(1);
+                if (p !== k && !m.files[p]) m.files[p] = m.files[k];
+              } catch (e) {}
+            });
+          }
+        } catch (e) {}
         createUnityInstance(canvas, config, (progress) => {
           progressBarFull.style.width = 100 * progress + "%";
               }).then((unityInstance) => {
