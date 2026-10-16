@@ -2,6 +2,7 @@
 <html lang="en-us">
   <head>
     <meta charset="utf-8">
+    <base href="https://cdn.jsdelivr.net/gh/ajtabjs/wl-ports2@main/ultrakill/">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <title>Unity WebGL Player | ULTRAKILL</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
@@ -51,13 +52,23 @@
         updateBannerVisibility();
       }
 
-      var buildUrl = "Build";
+      // Resolve asset URLs against <base href> (CDN) so Unity/Addressables
+      // requests hit where assets are served, not the page origin root.
+      // fetch/XHR with a leading "/" ignore <base>, which previously caused
+      // requests like /StreamingAssets/aa/settings.json to hit the page host.
+      // split-loader.js also rewrites such requests; absolute config URLs
+      // make Unity's own URL joins robust.
+      function resolveAssetUrl(rel) {
+        try { return new URL(rel, document.baseURI).href; } catch (e) { return rel; }
+      }
+      function stripTrailingSlash(s) { return s.replace(/\/$/, ""); }
+      var buildUrl = stripTrailingSlash(resolveAssetUrl("Build"));
       var loaderUrl = buildUrl + "/build.loader.js";
       var config = {
         dataUrl: buildUrl + "/build.data",
         frameworkUrl: buildUrl + "/build.framework.js",
         codeUrl: buildUrl + "/build.wasm",
-        streamingAssetsUrl: "StreamingAssets",
+        streamingAssetsUrl: stripTrailingSlash(resolveAssetUrl("StreamingAssets")),
         companyName: "Hakita",
         productName: "ULTRAKILL",
         productVersion: "4.1",

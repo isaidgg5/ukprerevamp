@@ -13,8 +13,51 @@
  */
 (function () {
   "use strict";
+  // Where game assets are actually served. Respects <base href> (CDN).
+  // Unity/Addressables sometimes request root-absolute paths like
+  // "/StreamingAssets/aa/settings.json", which ignore <base> and hit the
+  // page origin (e.g. https://caesium.pages.dev/StreamingAssets/...)
+  // instead of the CDN. Rewrite such requests back onto assetBase.
+  var assetBase = (document.baseURI || location.href);
   var manifest_url = "split-manifest.json";
   var cache = new Map(); // relPath -> Promise<ArrayBuffer>
+
+  function assetBaseHref() {
+    try { return new URL(assetBase).href; }
+    catch (e) { return assetBase; }
+  }
+
+  // "https://caesium.pages.dev/StreamingAssets/aa/settings.json?x=1"
+  //   -> "https://cdn.../ultrakill/StreamingAssets/aa/settings.json?x=1"
+  // "/StreamingAssets/aa/settings.json"
+  //   -> "https://cdn.../ultrakill/StreamingAssets/aa/settings.json"
+  // Returns null when the URL does not look like a game asset path.
+  function rewriteAssetUrl(urlstr) {
+    try {
+      var u = new URL(urlstr, document.baseURI);
+      var path = u.pathname || "";
+      var markers = ["StreamingAssets/", "Build/", "TemplateData/", "split-manifest.json"];
+      var idx = -1;
+      for (var i = 0; i < markers.length; i++) {
+        var j = path.indexOf(markers[i]);
+        if (j >= 0 && (idx < 0 || j < idx)) idx = j;
+      }
+      if (idx < 0) return null;
+      var rel = path.slice(idx);
+      var base = assetBaseHref();
+      if (base.charAt(base.length - 1) !== "/") base += "/";
+      return base + rel + u.search + u.hash;
+    } catch (e) { return null; }
+  }
+
+  function shouldRewriteAsset(urlstr) {
+    try {
+      var fixed = rewriteAssetUrl(urlstr);
+      if (!fixed) return false;
+      var cur = new URL(urlstr, document.baseURI).href;
+      return cur !== fixed;
+    } catch (e) { return false; }
+  }
 
   function contenttypefor(path) {
     if (/\.wasm(\?|#|$)/.test(path)) return "application/wasm";
@@ -83,9 +126,23 @@
   });
 
   function entryfor(url) {
-    var rel = normalize(url);
+    var urlstr = typeof url === "string" ? url : (url && url.url ? url.url : null);
+    if (!urlstr) return null;
+    var rel = normalize(urlstr);
     var e = manifest.files[rel];
     if (e) return { rel: rel, entry: e };
+    // Fallback: strip any hosting prefix (page subdir, CDN base path like
+    // "gh/user/repo@main/ultrakill/") to get the asset-relative path, so
+    // split files requested via absolute/page-origin URLs still match.
+    try {
+      var path = decodeURIComponent(new URL(urlstr, document.baseURI).pathname || "");
+      var m = /(StreamingAssets\/.*|Build\/.*|TemplateData\/.*|split-manifest\.json)$/.exec(path);
+      if (m) {
+        var rel2 = m[1];
+        var e2 = manifest.files[rel2];
+        if (e2) return { rel: rel2, entry: e2 };
+      }
+    } catch (ex) {}
     return null;
   }
 
@@ -132,10 +189,26 @@
 
   window.fetch = function (url, opts) {
     opts = opts || {};
-    var urlstr = typeof url === "string" ? url : (url && url.url ? url.url : null);
+    var urlstr = typeof url === "string" ? url : (url && url.url ? url.url : (url instanceof URL ? url.href : null));
     var method = (opts.method || (url && url.method) || "GET").toUpperCase();
     var found = urlstr ? entryfor(urlstr) : null;
-    if (!found) return origfetch(url, opts);
+    if (!found) {
+      // Non-split assets (e.g. StreamingAssets/aa/settings.json, .json/.bundle
+      // files Unity/Addressables fetches with a leading "/"): rebase them onto
+      // <base href> (CDN) instead of the page origin root.
+      if (urlstr && shouldRewriteAsset(urlstr)) {
+        var fixed = rewriteAssetUrl(urlstr);
+        if (fixed) {
+          if (typeof url === "string" || url instanceof URL) return origfetch(fixed, opts);
+          try {
+            // url was a Request: clone it onto the fixed URL, preserving init.
+            var cloned = new Request(fixed, url);
+            return origfetch(cloned, opts);
+          } catch (e) { return origfetch(fixed, opts); }
+        }
+      }
+      return origfetch(url, opts);
+    }
     var rel = found.rel, entry = found.entry;
 
     if (method === "HEAD") {
@@ -175,6 +248,15 @@
     this.open = function (method, url) {
       reqmethod = (method || "GET").toUpperCase();
       requrl = url;
+      try {
+        if (typeof url === "string" && shouldRewriteAsset(url)) {
+          var fixed = rewriteAssetUrl(url);
+          if (fixed) {
+            requrl = fixed;
+            arguments[1] = fixed;
+          }
+        }
+      } catch (e) {}
       return xhr.open.apply(xhr, arguments);
     };
     this.setRequestHeader = function (k, v) {
@@ -215,6 +297,17 @@
     this.send = function () {
       var found = typeof requrl === "string" ? entryfor(requrl) : null;
       if (!found || (reqmethod !== "GET" && reqmethod !== "HEAD")) {
+        // Non-split asset requested from the wrong host/root (e.g. UnityWebRequest
+        // for /StreamingAssets/aa/settings.json): rebase onto CDN base.
+        try {
+          if (typeof requrl === "string" && (!found) && shouldRewriteAsset(requrl)) {
+            var fixed = rewriteAssetUrl(requrl);
+            if (fixed) {
+              requrl = fixed;
+              try { xhr.open(reqmethod, fixed); } catch (e) {}
+            }
+          }
+        } catch (e) {}
         return xhr.send.apply(xhr, arguments);
       }
       var rel = found.rel, entry = found.entry;
